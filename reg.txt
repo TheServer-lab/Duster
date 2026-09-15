@@ -1,0 +1,3 @@
+kdenlive|25.08.1|kdenlive-v-25.08.1.zip
+7zip|25.01|7zip-v-25.01.zip
+obs|31.0.3|obs-v-31.0.3.zip

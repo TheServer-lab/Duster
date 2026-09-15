@@ -1,0 +1,73 @@
+$ ============================================================================
+$ Duster Installer Module -- orchestrates installation pipeline
+$ ============================================================================
+
+bring filesystem
+bring path
+bring zip
+bring registry
+bring download
+
+job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
+  dummy = 0
+  show("Duster: installing {appName}...")
+  reg = registry.duster_load_registry(regPath)
+  
+  appInfo = reg[appName]
+  if appInfo == EMP {
+    rt_throwv("duster: unknown application '{appName}' in registry")
+  }
+
+  version = appInfo["version"]
+  artifact = appInfo["artifact"]
+  show("  version: {version}")
+  show("  artifact: {artifact}")
+
+  archivePath = path.join(workDir, artifact)
+  download.duster_obtain_release(artifact, releasesDir, archivePath)
+
+  extractDir = path.join(workDir, "extracted_{appName}")
+  setupPath = path.join(extractDir, "setup.exe")
+  if filesystem.exists(setupPath) {
+    do {
+      filesystem.remove(setupPath)
+    } grab (err) {
+      dummy = 1
+    }
+  }
+  if filesystem.exists(extractDir) == No {
+    filesystem.mkdir(extractDir)
+  }
+
+  show("  extracting archive...")
+  zip.extract(archivePath, extractDir)
+
+  if filesystem.isfile(setupPath) == No {
+    rt_throwv("duster: setup.exe not found in extracted archive for {appName}")
+  }
+
+  show("  running setup.exe...")
+  rc = process.run(setupPath, [])
+  if rc != 0 {
+    rt_throwv("duster: setup.exe exited with non-zero status {rc}")
+  }
+
+  if keepArchive == No {
+    show("  cleaning up temporary files...")
+    do {
+      filesystem.remove(archivePath)
+    } grab (err) {
+      dummy = 1
+    }
+    do {
+      filesystem.remove(setupPath)
+    } grab (err) {
+      dummy = 1
+    }
+  } ifnot {
+    show("  retaining downloaded archive (-keep requested).")
+  }
+
+  show("Duster: successfully installed {appName}!")
+  give 0
+}

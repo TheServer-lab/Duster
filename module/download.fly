@@ -1,0 +1,16 @@
+$ ============================================================================
+$ Duster Download Module -- obtains release artifacts
+$ ============================================================================
+
+bring filesystem
+bring path
+
+job duster_obtain_release(artifactName, releasesDir, destPath) {
+  srcPath = path.join(releasesDir, artifactName)
+  if filesystem.isfile(srcPath) {
+    bytesData = filesystem.read_bytes(srcPath)
+    filesystem.write_bytes(destPath, bytesData)
+    give Yes
+  }
+  rt_throwv("duster: release artifact not found: {artifactName}")
+}

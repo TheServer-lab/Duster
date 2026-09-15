@@ -1,0 +1,9 @@
+$ duster project manifest (docs/architecture.md §9)
+project
+  name "duster"
+  version "1.0.0"
+  description "Software distribution and installation chain written entirely in Fly"
+  author "Fly Authors"
+  source "src/main.fly"
+  output "bin/duster"
+  deps coll [ ]

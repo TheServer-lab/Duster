@@ -1,0 +1,61 @@
+$ ============================================================================
+$ Duster Main CLI -- entry point for duster -install <app> [-keep]
+$ ============================================================================
+
+bring filesystem
+bring path
+bring zip
+bring registry
+bring download
+bring installer
+
+job main() {
+  args = process.args()
+  if count(args) < 1 {
+    show("usage: duster -install <app> [-keep]")
+    process.exit(1)
+  }
+
+  cmd = args[0]
+  if cmd != "-install" {
+    show("unknown command: {cmd}")
+    show("usage: duster -install <app> [-keep]")
+    process.exit(1)
+  }
+
+  if count(args) < 2 {
+    show("error: missing application name")
+    process.exit(1)
+  }
+
+  rawAppArg = args[1]
+  appName = rawAppArg
+  keep = No
+
+  if count(args) >= 3 {
+    if args[2] == "-keep" {
+      keep = Yes
+    }
+  }
+
+  if count(rawAppArg) >= 5 {
+    suffix = rawAppArg[count(rawAppArg) - 5 : count(rawAppArg)]
+    if suffix == "-keep" {
+      appName = rawAppArg[0 : count(rawAppArg) - 5]
+      keep = Yes
+    }
+  }
+
+  regPath = "reg.txt"
+  releasesDir = "RELEASES"
+  workDir = "."
+
+  do {
+    installer.duster_install_app(appName, keep, regPath, releasesDir, workDir)
+  } grab (err) {
+    show("error: {err}")
+    process.exit(1)
+  }
+}
+
+main()

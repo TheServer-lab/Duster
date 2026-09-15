@@ -1,0 +1,35 @@
+$ ============================================================================
+$ Duster Registry Module -- parses reg.txt and resolves app versions
+$ ============================================================================
+
+bring filesystem
+
+native job rt_char_from_code(code)
+native job rt_throwv(v)
+
+job duster_parse_registry(regContent) {
+  registry = {}
+  lines = sever(regContent, rt_char_from_code(10))
+  for line in lines {
+    stripped = cut(line)
+    if count(stripped) > 0 {
+      parts = sever(stripped, "|")
+      if count(parts) >= 3 {
+        appName = cut(parts[0])
+        version = cut(parts[1])
+        artifact = cut(parts[2])
+        place(registry, appName, {"version": version, "artifact": artifact})
+      }
+    }
+  }
+  give registry
+}
+
+job duster_load_registry(path) {
+  do {
+    content = filesystem.read(path)
+    give duster_parse_registry(content)
+  } grab (err) {
+    rt_throwv("duster: failed to read registry {path}: {err}")
+  }
+}

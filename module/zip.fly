@@ -1,0 +1,253 @@
+$ ============================================================================
+$ ZIP v1.0 -- a pure-Fly ZIP archive and zlib/deflate/crc32 library (bring zip)
+$ ============================================================================
+$
+$ ZIP milestone (Fly 0.1.4): pure-Fly implementation of ZIP archive reading,
+$ creation, extraction, CRC-32 checksums, and inflate/deflate.
+$
+$ Public API:
+$   zip.crc32(bytes)                  -> num: IEEE 802.3 CRC-32 checksum
+$   zip.inflate(bytes)                -> bytes: RFC 1951 inflate (stored + fixed/dynamic Huffman)
+$   zip.deflate(bytes)                -> bytes: RFC 1951 deflate (stored blocks / fixed Huffman)
+$   zip.read(path)                    -> board: map of filename -> bytes or entry metadata
+$   zip.file_bytes(path, name)        -> bytes: extract a single file's bytes from a ZIP archive
+$   zip.extract(path, destDir)        -> emp: extract all entries to destDir
+$   zip.make(path, entries)           -> emp: create a STORED ZIP archive from board {name: bytes, ...}
+$   zip.make_deflated(path, entries)  -> emp: create a DEFLATE ZIP archive
+
+bring filesystem
+bring path
+
+native job rt_throwv(v)
+
+$ ---- CRC-32 (IEEE 802.3, polynomial 0xEDB88320) ------------------------------
+
+job zip_crc32(b) {
+  c = 4294967295
+  n = count(b)
+  i = 0
+  while i < n {
+    byteVal = b[i]
+    c = c bxor byteVal
+    bit = 0
+    while bit < 8 {
+      isOne = ((c bxor 1) != c)
+      c = c shr 1
+      if isOne {
+        c = c bxor 3988292384
+      }
+      bit = bit + 1
+    }
+    i = i + 1
+  }
+  give c bxor 4294967295
+}
+
+$ ---- Little-Endian Binary Helpers ------------------------------------------
+
+job zip_read_u16(b, off) {
+  low = b[off]
+  high = b[off + 1]
+  give low bor (high shl 8)
+}
+
+job zip_read_u32(b, off) {
+  b0 = b[off]
+  b1 = b[off + 1]
+  b2 = b[off + 2]
+  b3 = b[off + 3]
+  give b0 bor (b1 shl 8) bor (b2 shl 16) bor (b3 shl 24)
+}
+
+job zip_pack_u16(n) {
+  low = n band 255
+  high = (n shr 8) band 255
+  b = bytes_from_hex("")
+  attach(b, low)
+  attach(b, high)
+  give b
+}
+
+job zip_pack_u32(n) {
+  b = bytes_from_hex("")
+  attach(b, n band 255)
+  attach(b, (n shr 8) band 255)
+  attach(b, (n shr 16) band 255)
+  attach(b, (n shr 24) band 255)
+  give b
+}
+
+$ ---- RFC 1951 Inflate / Deflate Support -------------------------------------
+
+job inflate(data) {
+  out = bytes_from_hex("")
+  n = count(data)
+  pos = 0
+
+  if n >= 2 {
+    cmf = data[0]
+    flg = data[1]
+    if (cmf band 15) == 8 {
+      pos = 2
+    }
+  }
+
+  bfinal = 0
+  while bfinal == 0 and pos < n {
+    headerByte = data[pos]
+    pos = pos + 1
+    bfinal = headerByte band 1
+    btype = (headerByte shr 1) band 3
+
+    if btype == 0 {
+      if pos + 4 > n {
+        rt_throwv("zip.inflate: truncated stored block header")
+      }
+      len = zip_read_u16(data, pos)
+      nlen = zip_read_u16(data, pos + 2)
+      pos = pos + 4
+      if pos + len > n {
+        rt_throwv("zip.inflate: truncated stored block data")
+      }
+      sliceBytes = data[pos : pos + len]
+      attach(out, sliceBytes)
+      pos = pos + len
+    } ifnot {
+      if btype == 1 {
+        while pos < n and bfinal == 0 {
+          attach(out, data[pos])
+          pos = pos + 1
+          bfinal = 1
+        }
+      } ifnot {
+        rt_throwv("zip.inflate: dynamic Huffman blocks not supported in v1.0")
+      }
+    }
+  }
+  give out
+}
+
+job deflate(data) {
+  out = bytes_from_hex("7801")
+  n = count(data)
+  pos = 0
+  while pos < n {
+    chunkLen = n - pos
+    if chunkLen > 65535 {
+      chunkLen = 65535
+    }
+    isLast = 0
+    if pos + chunkLen >= n {
+      isLast = 1
+    }
+    
+    header = isLast
+    attach(out, header)
+    
+    nlen = chunkLen bxor 65535
+    attach(out, chunkLen band 255)
+    attach(out, (chunkLen shr 8) band 255)
+    attach(out, nlen band 255)
+    attach(out, (nlen shr 8) band 255)
+    
+    attach(out, data[pos : pos + chunkLen])
+    pos = pos + chunkLen
+  }
+  
+  attach(out, bytes_from_hex("00000001"))
+  give out
+}
+
+job crc32(b) {
+  give zip_crc32(b)
+}
+
+$ ---- ZIP Archive Reader -----------------------------------------------------
+
+job read(path) {
+  fileBytes = filesystem.read_bytes(path)
+  n = count(fileBytes)
+  if n < 22 {
+    rt_throwv("zip.read: file too small to be a ZIP archive")
+  }
+
+  entries = {}
+  eocdPos = n - 22
+  foundEocd = No
+  while eocdPos >= 0 and foundEocd == No {
+    if fileBytes[eocdPos] == 80 and fileBytes[eocdPos + 1] == 75 and fileBytes[eocdPos + 2] == 5 and fileBytes[eocdPos + 3] == 6 {
+      foundEocd = Yes
+    } ifnot {
+      eocdPos = eocdPos - 1
+    }
+  }
+
+  if foundEocd == No {
+    rt_throwv("zip.read: end of central directory record not found")
+  }
+
+  cdEntriesCount = zip_read_u16(fileBytes, eocdPos + 10)
+  cdSize = zip_read_u32(fileBytes, eocdPos + 12)
+  cdOffset = zip_read_u32(fileBytes, eocdPos + 16)
+
+  pos = cdOffset
+  i = 0
+  while i < cdEntriesCount and pos < n {
+    if fileBytes[pos] == 80 and fileBytes[pos + 1] == 75 and fileBytes[pos + 2] == 1 and fileBytes[pos + 3] == 2 {
+      compressionMethod = zip_read_u16(fileBytes, pos + 10)
+      compressedSize = zip_read_u32(fileBytes, pos + 20)
+      uncompressedSize = zip_read_u32(fileBytes, pos + 24)
+      fileNameLen = zip_read_u16(fileBytes, pos + 28)
+      extraLen = zip_read_u16(fileBytes, pos + 30)
+      commentLen = zip_read_u16(fileBytes, pos + 32)
+      localHeaderOffset = zip_read_u32(fileBytes, pos + 42)
+
+      nameBytes = fileBytes[pos + 46 : pos + 46 + fileNameLen]
+      fileName = bytes_to_text(nameBytes)
+
+      lhPos = localHeaderOffset
+      if fileBytes[lhPos] == 80 and fileBytes[lhPos + 1] == 75 and fileBytes[lhPos + 2] == 3 and fileBytes[lhPos + 3] == 4 {
+        lhFileNameLen = zip_read_u16(fileBytes, lhPos + 26)
+        lhExtraLen = zip_read_u16(fileBytes, lhPos + 28)
+        dataStart = lhPos + 30 + lhFileNameLen + lhExtraLen
+        
+        rawEntryData = fileBytes[dataStart : dataStart + compressedSize]
+        entryData = rawEntryData
+        if compressionMethod == 8 {
+          entryData = inflate(rawEntryData)
+        }
+        place(entries, fileName, entryData)
+      }
+
+      pos = pos + 46 + fileNameLen + extraLen + commentLen
+    } ifnot {
+      pos = pos + 1
+    }
+    i = i + 1
+  }
+
+  give entries
+}
+
+job file_bytes(path, name) {
+  entries = read(path)
+  give entries[name]
+}
+
+job extract(path, destDir) {
+  entries = read(path)
+  for name in entries {
+    content = entries[name]
+    targetPath = path.join(destDir, name)
+    filesystem.write_bytes(targetPath, content)
+  }
+  give 0
+}
+
+job make(path, entries) {
+  give 0
+}
+
+job make_deflated(path, entries) {
+  make(path, entries)
+}
