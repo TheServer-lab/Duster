@@ -226,6 +226,21 @@ duster uninstall 7zip
 
 That's it.
 
+## Administrator Privileges
+
+Some Windows installers require Administrator privileges.
+
+Duster does not attempt to automatically elevate itself or bypass Windows' normal security model.
+
+If an installer reports that elevation is required, open **Windows Terminal, PowerShell, or Command Prompt as Administrator** and run Duster again:
+
+```text
+duster install <package>
+```
+
+This is intentional. Duster handles software distribution; Windows handles authorization and elevation.
+
+
 **Search. Install. Upgrade. Uninstall.**
 
 ## License
