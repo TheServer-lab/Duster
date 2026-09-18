@@ -1,16 +1,297 @@
 $ ============================================================================
 $ Duster Download Module -- obtains release artifacts
 $ ============================================================================
+$
+$ Fetches release ZIP archives from the Duster release repository's RELEASE
+$ directory over HTTPS (binary-safe). The base URL can be overridden with the
+$ DUSTER_RELEASE_BASE environment variable; setting it to an empty string
+$ selects offline mode, which copies from the local releases directory
+$ instead of the network.
 
 bring filesystem
 bring path
+bring net
+bring environment
+
+native job rt_char_from_code(code)
+native job rt_throwv(v)
+
+job duster_cr() { give rt_char_from_code(13) }
+job duster_nl() { give rt_char_from_code(10) }
+job duster_colon() { give rt_char_from_code(58) }
+job duster_space() { give rt_char_from_code(32) }
+
+$ ---- TLS trust store --------------------------------------------------------
+$
+$ net.connect_tls verifies against the OpenSSL default trust store (and the
+$ additive FLY_TLS_CA_FILE env hook, runtime/net.c). On Windows/MSYS the
+$ default OpenSSL CA bundle is often a 0-byte placeholder, so HTTPS would
+$ fail verification out of the box. Duster locates a real CA bundle from a
+$ few well-known locations and registers it via FLY_TLS_CA_FILE BEFORE the
+$ first TLS connection (the runtime reads the env hook when building its
+$ per-process SSL_CTX). An explicit FLY_TLS_CA_FILE always wins.
+
+job duster_ensure_ca() {
+  cur = environment.get("FLY_TLS_CA_FILE")
+  if cur != EMP {
+    if count(cur) > 0 {
+      give Yes
+    }
+  }
+  candidates = [
+    "C:\\msys64\\usr\\ssl\\certs\\ca-bundle.crt",
+    "C:\\msys64\\mingw64\\ssl\\certs\\ca-bundle.crt",
+    "C:\\msys64\\ucrt64\\etc\\ssl\\certs\\ca-bundle.crt",
+    "C:\\Program Files\\Git\\mingw64\\ssl\\certs\\ca-bundle.crt",
+    "C:\\Program Files\\Git\\usr\\ssl\\certs\\ca-bundle.crt",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/pki/tls/certs/ca-bundle.crt"
+  ]
+  for p in candidates {
+    do {
+      data = filesystem.read_bytes(p)
+      if count(data) > 0 {
+        environment.set("FLY_TLS_CA_FILE", p)
+        give Yes
+      }
+    } grab (err) {}
+  }
+  give No
+}
+
+$ ---- URL parsing ------------------------------------------------------------
+
+job duster_parse_url(url) {
+  scheme = "https"
+  port = 443
+  work = url
+  n = count(url)
+  if n >= 8 {
+    if url[0 : 8] == "https://" {
+      scheme = "https"
+      work = url[8 : n]
+      n = count(work)
+    }
+  }
+  if n >= 7 {
+    if url[0 : 7] == "http://" {
+      scheme = "http"
+      work = url[7 : n]
+      n = count(work)
+      port = 80
+    }
+  }
+
+  hostPort = work
+  path = "/"
+  slashIdx = 0
+  foundSlash = No
+  i = 0
+  while i < n and foundSlash == No {
+    if work[i] == "/" {
+      slashIdx = i
+      foundSlash = Yes
+    } ifnot {
+      i = i + 1
+    }
+  }
+  if foundSlash == Yes {
+    hostPort = work[0 : slashIdx]
+    path = work[slashIdx : n]
+  }
+
+  host = hostPort
+  colonIdx = 0
+  foundColon = No
+  j = 0
+  hpCount = count(hostPort)
+  while j < hpCount and foundColon == No {
+    if hostPort[j] == duster_colon() {
+      colonIdx = j
+      foundColon = Yes
+    } ifnot {
+      j = j + 1
+    }
+  }
+  if foundColon == Yes {
+    host = hostPort[0 : colonIdx]
+    portStr = hostPort[colonIdx + 1 : hpCount]
+    do {
+      port = num(portStr)
+    } grab (err) {
+      rt_throwv("duster: invalid port in release URL: {portStr}")
+    }
+  }
+
+  give {"scheme": scheme, "host": host, "port": port, "path": path}
+}
+
+$ ---- HTTP GET (binary-safe) -------------------------------------------------
+
+job duster_http_get_bytes(url) {
+  duster_ensure_ca()
+  parsed = duster_parse_url(url)
+  host = parsed["host"]
+  port = parsed["port"]
+  path = parsed["path"]
+  scheme = parsed["scheme"]
+
+  defaultPort = 80
+  if scheme == "https" {
+    defaultPort = 443
+  }
+  crlf = "{duster_cr()}{duster_nl()}"
+  hostValue = host
+  if port != defaultPort {
+    hostValue = "{host}:{port}"
+  }
+  req = "GET {path} HTTP/1.1{crlf}Host: {hostValue}{crlf}Connection: close{crlf}{crlf}"
+
+  do {
+    conn = -1
+    if scheme == "https" {
+      conn = net.connect_tls(host, port)
+    } ifnot {
+      conn = net.connect(host, port)
+    }
+    net.send(conn, req)
+    all = bytes_from_hex("")
+    going = Yes
+    while going == Yes {
+      chunk = net.receive_bytes(conn, 65536)
+      if count(chunk) == 0 {
+        going = No
+      } ifnot {
+        attach(all, chunk)
+      }
+    }
+    net.close(conn)
+    give all
+  } grab (err) {
+    rt_throwv("duster: download failed from {url}: {err}")
+  }
+}
+
+job duster_parse_status(line) {
+  n = count(line)
+  sp1 = 0
+  found = No
+  i = 0
+  while i < n and found == No {
+    if line[i] == duster_space() {
+      sp1 = i
+      found = Yes
+    } ifnot {
+      i = i + 1
+    }
+  }
+  if found == No {
+    rt_throwv("duster: malformed HTTP status line: {line}")
+  }
+  sp2 = n
+  found2 = No
+  j = sp1 + 1
+  while j < n and found2 == No {
+    if line[j] == duster_space() {
+      sp2 = j
+      found2 = Yes
+    } ifnot {
+      j = j + 1
+    }
+  }
+  statusStr = line[sp1 + 1 : sp2]
+  do {
+    give num(statusStr)
+  } grab (err) {
+    rt_throwv("duster: invalid HTTP status code: {statusStr}")
+  }
+}
+
+job duster_http_get(url) {
+  all = duster_http_get_bytes(url)
+  n = count(all)
+
+  sepIdx = 0
+  foundSep = No
+  i = 0
+  while i + 3 < n and foundSep == No {
+    if all[i] == 13 and all[i + 1] == 10 and all[i + 2] == 13 and all[i + 3] == 10 {
+      sepIdx = i
+      foundSep = Yes
+    } ifnot {
+      i = i + 1
+    }
+  }
+  if foundSep == No {
+    rt_throwv("duster: malformed HTTP response from download (no header/body separator)")
+  }
+
+  headerBytes = all[0 : sepIdx]
+  body = all[sepIdx + 4 : n]
+  headerText = bytes_to_text(headerBytes)
+
+  firstLine = headerText
+  nlIdx = 0
+  foundNl = No
+  k = 0
+  hn = count(headerText)
+  while k < hn and foundNl == No {
+    if headerText[k] == duster_nl() {
+      nlIdx = k
+      foundNl = Yes
+    } ifnot {
+      k = k + 1
+    }
+  }
+  if foundNl == Yes {
+    firstLine = headerText[0 : nlIdx]
+  }
+  fln = count(firstLine)
+  if fln > 0 {
+    if firstLine[fln - 1] == duster_cr() {
+      firstLine = firstLine[0 : fln - 1]
+    }
+  }
+  status = duster_parse_status(firstLine)
+
+  give {"status": status, "body": body}
+}
+
+$ ---- public API -------------------------------------------------------------
+
+job duster_fetch_text(url) {
+  resp = duster_http_get(url)
+  status = resp["status"]
+  if status != 200 {
+    rt_throwv("duster: download failed for '{url}' (HTTP {status})")
+  }
+  give bytes_to_text(resp["body"])
+}
 
 job duster_obtain_release(artifactName, releasesDir, destPath) {
-  srcPath = path.join(releasesDir, artifactName)
-  if filesystem.isfile(srcPath) {
-    bytesData = filesystem.read_bytes(srcPath)
-    filesystem.write_bytes(destPath, bytesData)
-    give Yes
+  baseUrl = environment.get("DUSTER_RELEASE_BASE")
+  if baseUrl == EMP {
+    baseUrl = "https://raw.githubusercontent.com/TheServer-lab/Duster/refs/heads/main/RELEASE"
   }
-  rt_throwv("duster: release artifact not found: {artifactName}")
+
+  if count(baseUrl) == 0 {
+    $ Offline mode: copy from the local releases directory instead of the network.
+    srcPath = path.join(releasesDir, artifactName)
+    if filesystem.isfile(srcPath) {
+      bytesData = filesystem.read_bytes(srcPath)
+      filesystem.write_bytes(destPath, bytesData)
+      give Yes
+    }
+    rt_throwv("duster: release artifact not found: {artifactName}")
+  }
+
+  url = "{baseUrl}/{artifactName}"
+  resp = duster_http_get(url)
+  status = resp["status"]
+  if status != 200 {
+    rt_throwv("duster: download failed for '{artifactName}' (HTTP {status})")
+  }
+  filesystem.write_bytes(destPath, resp["body"])
+  give Yes
 }

@@ -6,4 +6,5 @@ project
   author "Fly Authors"
   source "src/main.fly"
   output "bin/duster"
+  icon "assates/duster.ico"
   deps coll [ ]

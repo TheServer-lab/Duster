@@ -1,60 +1,116 @@
 $ ============================================================================
-$ Duster Main CLI -- entry point for duster -install <app> [-keep]
+$ Duster Main CLI -- entry point for duster commands
 $ ============================================================================
 
+bring download
 bring filesystem
 bring path
 bring zip
 bring registry
-bring download
 bring installer
 
 job main() {
   args = process.args()
   if count(args) < 1 {
-    show("usage: duster -install <app> [-keep]")
+    show("usage: duster [list|search|install|upgrade|uninstall] <app>")
     process.exit(1)
   }
 
   cmd = args[0]
-  if cmd != "-install" {
-    show("unknown command: {cmd}")
-    show("usage: duster -install <app> [-keep]")
-    process.exit(1)
-  }
-
-  if count(args) < 2 {
-    show("error: missing application name")
-    process.exit(1)
-  }
-
-  rawAppArg = args[1]
-  appName = rawAppArg
-  keep = No
-
-  if count(args) >= 3 {
-    if args[2] == "-keep" {
-      keep = Yes
+  if cmd == "-install" or cmd == "install" {
+    if count(args) < 2 {
+      show("error: missing application name")
+      process.exit(1)
     }
-  }
+    rawAppArg = args[1]
+    appName = rawAppArg
+    keep = No
 
-  if count(rawAppArg) >= 5 {
-    suffix = rawAppArg[count(rawAppArg) - 5 : count(rawAppArg)]
-    if suffix == "-keep" {
-      appName = rawAppArg[0 : count(rawAppArg) - 5]
-      keep = Yes
+    if count(args) >= 3 {
+      if args[2] == "-keep" {
+        keep = Yes
+      }
     }
-  }
 
-  regPath = "reg.txt"
-  releasesDir = "RELEASES"
-  workDir = "."
+    if count(rawAppArg) >= 5 {
+      suffix = rawAppArg[count(rawAppArg) - 5 : count(rawAppArg)]
+      if suffix == "-keep" {
+        appName = rawAppArg[0 : count(rawAppArg) - 5]
+        keep = Yes
+      }
+    }
 
-  do {
-    installer.duster_install_app(appName, keep, regPath, releasesDir, workDir)
-  } grab (err) {
-    show("error: {err}")
-    process.exit(1)
+    regPath = "reg.sleep"
+    releasesDir = "RELEASES"
+    workDir = "."
+
+    do {
+      installer.duster_install_app(appName, keep, regPath, releasesDir, workDir)
+    } grab (err) {
+      show("error: {err}")
+      process.exit(1)
+    }
+  } ifnot {
+    if cmd == "list" {
+      do {
+        installer.duster_list_apps()
+      } grab (err) {
+        show("error: {err}")
+        process.exit(1)
+      }
+    } ifnot {
+      if cmd == "search" {
+        if count(args) < 2 {
+          show("error: missing search query")
+          process.exit(1)
+        }
+        query = args[1]
+        regPath = "reg.sleep"
+        do {
+          installer.duster_search_apps(query, regPath)
+        } grab (err) {
+          show("error: {err}")
+          process.exit(1)
+        }
+      } ifnot {
+        if cmd == "upgrade" {
+          if count(args) < 2 {
+            show("error: missing application name")
+            process.exit(1)
+          }
+          appName = args[1]
+          regPath = "reg.sleep"
+          releasesDir = "RELEASES"
+          workDir = "."
+          do {
+            installer.duster_upgrade_app(appName, regPath, releasesDir, workDir)
+          } grab (err) {
+            show("error: {err}")
+            process.exit(1)
+          }
+        } ifnot {
+          if cmd == "uninstall" {
+            if count(args) < 2 {
+              show("error: missing application name")
+              process.exit(1)
+            }
+            appName = args[1]
+            regPath = "reg.sleep"
+            workDir = "."
+            do {
+              installer.duster_uninstall_app(appName, regPath, workDir)
+            } grab (err) {
+              show("error: {err}")
+              process.exit(1)
+            }
+          } ifnot {
+            show("unknown command: {cmd}")
+            show("usage: duster [list|search|install|upgrade|uninstall]")
+            process.exit(1)
+          }
+        }
+      }
+    }
   }
 }
 

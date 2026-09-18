@@ -31,7 +31,7 @@ job zip_crc32(b) {
     c = c bxor byteVal
     bit = 0
     while bit < 8 {
-      isOne = ((c bxor 1) != c)
+      isOne = ((c band 1) == 1)
       c = c shr 1
       if isOne {
         c = c bxor 3988292384
@@ -77,6 +77,219 @@ job zip_pack_u32(n) {
   give b
 }
 
+$ ---- RFC 1951 Bit Reader Helpers --------------------------------------------
+
+job zip_bit_reader_new(data) {
+  give {"data": data, "n": count(data), "pos": 0, "bit": 0}
+}
+
+job zip_bit_read(st) {
+  pos = st["pos"]
+  bit = st["bit"]
+  data = st["data"]
+  n = st["n"]
+  if pos >= n {
+    rt_throwv("zip.inflate: unexpected end of bitstream")
+  }
+  byteVal = data[pos]
+  b = (byteVal shr bit) band 1
+  bit = bit + 1
+  if bit == 8 {
+    bit = 0
+    pos = pos + 1
+  }
+  place(st, "pos", pos)
+  place(st, "bit", bit)
+  give b
+}
+
+job zip_bit_read_n(st, numBits) {
+  val = 0
+  i = 0
+  while i < numBits {
+    b = zip_bit_read(st)
+    val = val bor (b shl i)
+    i = i + 1
+  }
+  give val
+}
+
+job zip_bit_align(st) {
+  if st["bit"] > 0 {
+    place(st, "bit", 0)
+    place(st, "pos", st["pos"] + 1)
+  }
+}
+
+$ ---- Canonical Huffman Tree Builder -----------------------------------------
+
+job zip_build_canonical_codes(lengths, num_symbols) {
+  bl_count = {}
+  i = 0
+  while i < num_symbols {
+    L = lengths[i]
+    if L == EMP {
+      L = 0
+    }
+    if L > 0 and L <= 15 {
+      cnt = bl_count[L]
+      if cnt == EMP {
+        cnt = 0
+      }
+      place(bl_count, L, cnt + 1)
+    }
+    i = i + 1
+  }
+
+  next_code = {}
+  code = 0
+  bits = 1
+  while bits <= 15 {
+    prev_cnt = bl_count[bits - 1]
+    if prev_cnt == EMP {
+      prev_cnt = 0
+    }
+    code = (code + prev_cnt) shl 1
+    place(next_code, bits, code)
+    bits = bits + 1
+  }
+
+  root = {"sym": -1}
+  s = 0
+  while s < num_symbols {
+    L = lengths[s]
+    if L == EMP {
+      L = 0
+    }
+    if L > 0 {
+      c = next_code[L]
+      if c == EMP {
+        c = 0
+      }
+      place(next_code, L, c + 1)
+
+      curr = root
+      bitIdx = 0
+      while bitIdx < L {
+        b = (c shr (L - 1 - bitIdx)) band 1
+        bKey = ""
+        if b == 0 {
+          bKey = "0"
+        } ifnot {
+          bKey = "1"
+        }
+        child = curr[bKey]
+        if child == EMP {
+          child = {"sym": -1}
+          place(curr, bKey, child)
+        }
+        curr = child
+        bitIdx = bitIdx + 1
+      }
+      place(curr, "sym", s)
+    }
+    s = s + 1
+  }
+  give root
+}
+
+job zip_decode_huffman(st, tree) {
+  curr = tree
+  while curr["sym"] == -1 {
+    b = zip_bit_read(st)
+    bKey = ""
+    if b == 0 {
+      bKey = "0"
+    } ifnot {
+      bKey = "1"
+    }
+    child = curr[bKey]
+    if child == EMP {
+      rt_throwv("zip.inflate: invalid Huffman code in stream")
+    }
+    curr = child
+  }
+  give curr["sym"]
+}
+
+$ ---- Length and Distance Tables ---------------------------------------------
+
+job zip_decode_length(sym, st) {
+  code = sym - 257
+  if code < 0 or code > 28 {
+    rt_throwv("zip.inflate: invalid length code {sym}")
+  }
+  base_lens = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+  extra_bits = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+  b = base_lens[code]
+  ex = extra_bits[code]
+  extra_val = 0
+  if ex > 0 {
+    extra_val = zip_bit_read_n(st, ex)
+  }
+  give b + extra_val
+}
+
+job zip_decode_distance(sym, st) {
+  if sym < 0 or sym > 29 {
+    rt_throwv("zip.inflate: invalid distance code {sym}")
+  }
+  base_dists = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+  extra_dists = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+  d = base_dists[sym]
+  ex = extra_dists[sym]
+  extra_val = 0
+  if ex > 0 {
+    extra_val = zip_bit_read_n(st, ex)
+  }
+  dist = d + extra_val
+  if dist <= 0 {
+    rt_throwv("zip.inflate: invalid distance {dist}")
+  }
+  give dist
+}
+
+job zip_inflate_decode_block(st, lit_tree, dist_tree, out) {
+  done = No
+  while done == No {
+    sym = zip_decode_huffman(st, lit_tree)
+    if sym < 256 {
+      attach(out, sym)
+    } ifnot {
+      if sym == 256 {
+        done = Yes
+      } ifnot {
+        if sym >= 257 and sym <= 285 {
+          length = zip_decode_length(sym, st)
+          dist_sym = zip_decode_huffman(st, dist_tree)
+          dist = zip_decode_distance(dist_sym, st)
+
+          base_idx = count(out) - dist
+          if base_idx < 0 {
+            rt_throwv("zip.inflate: backward distance out of bounds (offset {dist}, out len {count(out)})")
+          }
+          r = 0
+          while r < length {
+            offset = r
+            if dist < length {
+              offset = r % dist
+            }
+            src_idx = base_idx + offset
+            if src_idx < 0 or src_idx >= count(out) {
+              rt_throwv("zip.inflate: backward distance out of bounds (offset {dist}, out len {count(out)})")
+            }
+            b_val = out[src_idx]
+            attach(out, b_val)
+            r = r + 1
+          }
+        } ifnot {
+          rt_throwv("zip.inflate: invalid literal/length symbol {sym}")
+        }
+      }
+    }
+  }
+}
+
 $ ---- RFC 1951 Inflate / Deflate Support -------------------------------------
 
 job inflate(data) {
@@ -87,43 +300,175 @@ job inflate(data) {
   if n >= 2 {
     cmf = data[0]
     flg = data[1]
-    if (cmf band 15) == 8 {
+    if (cmf band 15) == 8 and ((cmf * 256 + flg) % 31) == 0 {
       pos = 2
     }
   }
 
+  st = zip_bit_reader_new(data)
+  place(st, "pos", pos)
   bfinal = 0
-  while bfinal == 0 and pos < n {
-    headerByte = data[pos]
-    pos = pos + 1
-    bfinal = headerByte band 1
-    btype = (headerByte shr 1) band 3
+
+  while bfinal == 0 {
+    bfinal = zip_bit_read(st)
+    btype = zip_bit_read_n(st, 2)
 
     if btype == 0 {
-      if pos + 4 > n {
+      zip_bit_align(st)
+      p = st["pos"]
+      if p + 4 > st["n"] {
         rt_throwv("zip.inflate: truncated stored block header")
       }
-      len = zip_read_u16(data, pos)
-      nlen = zip_read_u16(data, pos + 2)
-      pos = pos + 4
-      if pos + len > n {
+      len = zip_read_u16(st["data"], p)
+      nlen = zip_read_u16(st["data"], p + 2)
+      p = p + 4
+      if p + len > st["n"] {
         rt_throwv("zip.inflate: truncated stored block data")
       }
-      sliceBytes = data[pos : pos + len]
+      sliceBytes = st["data"][p : p + len]
       attach(out, sliceBytes)
-      pos = pos + len
+      place(st, "pos", p + len)
     } ifnot {
       if btype == 1 {
-        while pos < n and bfinal == 0 {
-          attach(out, data[pos])
-          pos = pos + 1
-          bfinal = 1
+        lit_lengths = {}
+        i = 0
+        while i <= 143 {
+          place(lit_lengths, i, 8)
+          i = i + 1
         }
+        while i <= 255 {
+          place(lit_lengths, i, 9)
+          i = i + 1
+        }
+        while i <= 279 {
+          place(lit_lengths, i, 7)
+          i = i + 1
+        }
+        while i <= 287 {
+          place(lit_lengths, i, 8)
+          i = i + 1
+        }
+
+        dist_lengths = {}
+        i = 0
+        while i < 32 {
+          place(dist_lengths, i, 5)
+          i = i + 1
+        }
+
+        lit_tree = zip_build_canonical_codes(lit_lengths, 288)
+        dist_tree = zip_build_canonical_codes(dist_lengths, 32)
+
+        zip_inflate_decode_block(st, lit_tree, dist_tree, out)
       } ifnot {
-        rt_throwv("zip.inflate: dynamic Huffman blocks not supported in v1.0")
+        if btype == 2 {
+          hlit = 257 + zip_bit_read_n(st, 5)
+          hdist = 1 + zip_bit_read_n(st, 5)
+          hclen = 4 + zip_bit_read_n(st, 4)
+
+          if hlit < 257 or hlit > 286 {
+            rt_throwv("zip.inflate: invalid HLIT {hlit}")
+          }
+          if hdist < 1 or hdist > 32 {
+            rt_throwv("zip.inflate: invalid HDIST {hdist}")
+          }
+          if hclen < 4 or hclen > 19 {
+            rt_throwv("zip.inflate: invalid HCLEN {hclen}")
+          }
+
+          cl_lengths = {}
+          order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+
+          ci = 0
+          while ci < hclen {
+            l = zip_bit_read_n(st, 3)
+            idx = order[ci]
+            place(cl_lengths, idx, l)
+            ci = ci + 1
+          }
+
+          cl_tree = zip_build_canonical_codes(cl_lengths, 19)
+
+          total_codes = hlit + hdist
+          all_lengths = []
+
+          while count(all_lengths) < total_codes {
+            sym = zip_decode_huffman(st, cl_tree)
+            if sym >= 0 and sym <= 15 {
+              attach(all_lengths, sym)
+            } ifnot {
+              if sym == 16 {
+                if count(all_lengths) == 0 {
+                  rt_throwv("zip.inflate: repeat previous code length with no previous")
+                }
+                prev = all_lengths[count(all_lengths) - 1]
+                rep = 3 + zip_bit_read_n(st, 2)
+                if count(all_lengths) + rep > total_codes {
+                  rt_throwv("zip.inflate: repeat count exceeds total code lengths (16)")
+                }
+                r = 0
+                while r < rep {
+                  attach(all_lengths, prev)
+                  r = r + 1
+                }
+              } ifnot {
+                if sym == 17 {
+                  rep = 3 + zip_bit_read_n(st, 3)
+                  if count(all_lengths) + rep > total_codes {
+                    rt_throwv("zip.inflate: repeat count exceeds total code lengths (17)")
+                  }
+                  r = 0
+                  while r < rep {
+                    attach(all_lengths, 0)
+                    r = r + 1
+                  }
+                } ifnot {
+                  if sym == 18 {
+                    rep = 11 + zip_bit_read_n(st, 7)
+                    if count(all_lengths) + rep > total_codes {
+                      rt_throwv("zip.inflate: repeat count exceeds total code lengths (18)")
+                    }
+                    r = 0
+                    while r < rep {
+                      attach(all_lengths, 0)
+                      r = r + 1
+                    }
+                  } ifnot {
+                    rt_throwv("zip.inflate: invalid code length symbol {sym}")
+                  }
+                }
+              }
+            }
+          }
+
+          if count(all_lengths) < hlit {
+            rt_throwv("zip.inflate: truncated literal/length code lengths")
+          }
+
+          lit_lengths = {}
+          dist_lengths = {}
+          li = 0
+          while li < hlit {
+            place(lit_lengths, li, all_lengths[li])
+            li = li + 1
+          }
+          di = 0
+          while di < hdist {
+            place(dist_lengths, di, all_lengths[hlit + di])
+            di = di + 1
+          }
+
+          lit_tree = zip_build_canonical_codes(lit_lengths, hlit)
+          dist_tree = zip_build_canonical_codes(dist_lengths, hdist)
+
+          zip_inflate_decode_block(st, lit_tree, dist_tree, out)
+        } ifnot {
+          rt_throwv("zip.inflate: invalid block type 3")
+        }
       }
     }
   }
+
   give out
 }
 

@@ -7,49 +7,321 @@ bring path
 bring zip
 bring registry
 bring download
+bring hashbox
+bring sleep
+
+native job rt_char_from_code(code)
+native job rt_throwv(v)
+
+job duster_read_installed_db(listPath) {
+  db = {}
+  do {
+    content = filesystem.read(listPath)
+    lines = sever(content, rt_char_from_code(10))
+    for line in lines {
+      stripped = cut(line)
+      if count(stripped) > 0 {
+        parts = sever(stripped, "|")
+        if count(parts) >= 2 {
+          appName = cut(parts[0])
+          version = cut(parts[1])
+          if count(appName) > 0 {
+            place(db, lower(appName), {"name": appName, "version": version})
+          }
+        }
+      }
+    }
+  } grab (err) {}
+  give db
+}
+
+job duster_write_installed_db(listPath, db) {
+  lines = []
+  for k in db {
+    entry = db[k]
+    name = entry["name"]
+    version = entry["version"]
+    attach(lines, "{name}|{version}")
+  }
+  content = bind(lines, rt_char_from_code(10))
+  if count(db) > 0 {
+    content = content + rt_char_from_code(10)
+  }
+  filesystem.write(listPath, content)
+}
+
+job duster_add_installed(listPath, name, version) {
+  db = duster_read_installed_db(listPath)
+  normKey = lower(name)
+  place(db, normKey, {"name": name, "version": version})
+  duster_write_installed_db(listPath, db)
+}
+
+job duster_remove_installed(listPath, name) {
+  db = duster_read_installed_db(listPath)
+  normKey = lower(name)
+  newDb = {}
+  for k in db {
+    if k != normKey {
+      place(newDb, k, db[k])
+    }
+  }
+  duster_write_installed_db(listPath, newDb)
+}
+
+job duster_find_installed(listPath, name) {
+  db = duster_read_installed_db(listPath)
+  normKey = lower(name)
+  if has(db, normKey) {
+    entry = db[normKey]
+    v = entry["version"]
+    give v
+  }
+  give EMP
+}
+
+job duster_parse_version_parts(vStr) {
+  parts = sever(vStr, ".")
+  nums = []
+  for p in parts {
+    clean = p
+    do {
+      n = num(clean)
+      attach(nums, n)
+    } grab (err) {
+      attach(nums, 0)
+    }
+  }
+  give nums
+}
+
+job duster_compare_versions(v1, v2) {
+  p1 = duster_parse_version_parts(v1)
+  p2 = duster_parse_version_parts(v2)
+  n1 = count(p1)
+  n2 = count(p2)
+  maxN = n1
+  if n2 > maxN {
+    maxN = n2
+  }
+  i = 0
+  while i < maxN {
+    s1 = 0
+    if i < n1 {
+      s1 = p1[i]
+    }
+    s2 = 0
+    if i < n2 {
+      s2 = p2[i]
+    }
+    if s1 < s2 {
+      give -1
+    }
+    if s1 > s2 {
+      give 1
+    }
+    i = i + 1
+  }
+  give 0
+}
+
+job duster_list_apps() {
+  listPath = "list.txt"
+  db = duster_read_installed_db(listPath)
+  if count(db) == 0 {
+    show("No installed applications.")
+    give 0
+  }
+  for k in db {
+    entry = db[k]
+    n = entry["name"]
+    v = entry["version"]
+    show("{n} {v}")
+  }
+  give 0
+}
+
+job duster_search_apps(query, regPath) {
+  reg = registry.duster_load_registry(regPath)
+  qLower = lower(query)
+  found = No
+  show("Search results for '{query}':")
+  for k in reg {
+    pkg = reg[k]
+    name = pkg["name"]
+    version = pkg["version"]
+    license = pkg["license"]
+    category = pkg["category"]
+    
+    match = No
+    if has(lower(name), qLower) {
+      match = Yes
+    }
+    if category != EMP and rt_typename(category) == "coll" {
+      for cat in category {
+        if rt_typename(cat) == "tex" and has(lower(cat), qLower) {
+          match = Yes
+        }
+      }
+    }
+    
+    if match == Yes {
+      found = Yes
+      show("  - {name} ({version}) [License: {license}]")
+      if category != EMP and rt_typename(category) == "coll" {
+        catsStr = bind(category, ", ")
+        show("    Category: {catsStr}")
+      }
+    }
+  }
+  if found == No {
+    show("  No matching packages found.")
+  }
+  give 0
+}
 
 job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
   dummy = 0
   show("Duster: installing {appName}...")
   reg = registry.duster_load_registry(regPath)
   
-  appInfo = reg[appName]
+  normName = lower(appName)
+  appInfo = reg[normName]
   if appInfo == EMP {
     rt_throwv("duster: unknown application '{appName}' in registry")
   }
 
+  name = appInfo["name"]
   version = appInfo["version"]
-  artifact = appInfo["artifact"]
+  artifact = appInfo["file_name"]
+  installerType = appInfo["installer_type"]
+  if installerType == EMP {
+    installerType = "Inno"
+  }
   show("  version: {version}")
   show("  artifact: {artifact}")
 
   archivePath = path.join(workDir, artifact)
   download.duster_obtain_release(artifact, releasesDir, archivePath)
 
-  extractDir = path.join(workDir, "extracted_{appName}")
-  setupPath = path.join(extractDir, "setup.exe")
-  if filesystem.exists(setupPath) {
+  $ SHA256 Verification
+  show("  verifying SHA256...")
+  do {
+    computedHash = hashbox.file_sha256(archivePath)
+    show("    SHA256: {computedHash}")
+    expectedHash = appInfo["file_hash"]
+    if expectedHash == EMP {
+      expectedHash = appInfo["sha256"]
+    }
+    if expectedHash != EMP {
+      if rt_typename(expectedHash) == "tex" and count(expectedHash) > 0 {
+        if lower(computedHash) != lower(expectedHash) {
+          rt_throwv("duster: SHA256 mismatch for {artifact} (expected {expectedHash}, got {computedHash})")
+        }
+      }
+    }
+  } grab (err) {
+    rt_throwv("duster: verification failed: {err}")
+  }
+
+  extractDir = path.join(workDir, "extracted_{name}")
+  if filesystem.exists(extractDir) {
     do {
-      filesystem.remove(setupPath)
+      filesystem.remove(extractDir)
     } grab (err) {
       dummy = 1
     }
   }
-  if filesystem.exists(extractDir) == No {
-    filesystem.mkdir(extractDir)
-  }
+  filesystem.mkdir(extractDir)
 
   show("  extracting archive...")
   zip.extract(archivePath, extractDir)
 
-  if filesystem.isfile(setupPath) == No {
-    rt_throwv("duster: setup.exe not found in extracted archive for {appName}")
-  }
-
-  show("  running setup.exe...")
-  rc = process.run(setupPath, [])
-  if rc != 0 {
-    rt_throwv("duster: setup.exe exited with non-zero status {rc}")
+  show("  running installer ({installerType})...")
+  if installerType == "Inno" or installerType == "inno" {
+    setupPath = path.join(extractDir, "setup.exe")
+    if filesystem.isfile(setupPath) == No {
+      rt_throwv("duster: setup.exe not found in extracted archive for {name}")
+    }
+    rc = process.run(setupPath, ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+    if rc != 0 {
+      rt_throwv("duster: setup.exe exited with non-zero status {rc}")
+    }
+  } ifnot {
+    if installerType == "NSIS" or installerType == "nsis" {
+      setupPath = path.join(extractDir, "setup.exe")
+      if filesystem.isfile(setupPath) == No {
+        setupPath = path.join(extractDir, "installer.exe")
+      }
+      if filesystem.isfile(setupPath) == No {
+        rt_throwv("duster: setup.exe not found in extracted archive for {name}")
+      }
+      rc = process.run(setupPath, ["/S"])
+      if rc != 0 {
+        rt_throwv("duster: NSIS installer exited with non-zero status {rc}")
+      }
+    } ifnot {
+      if installerType == "MSI" or installerType == "msi" {
+        msiPath = path.join(extractDir, "setup.msi")
+        if filesystem.isfile(msiPath) == No {
+          msiPath = path.join(extractDir, "setup.exe")
+        }
+        if filesystem.isfile(msiPath) == No {
+          msiPath = path.join(extractDir, artifact)
+        }
+        if filesystem.isfile(msiPath) {
+          ext = path.extension(msiPath)
+          rc = 0
+          if ext == ".msi" {
+            rc = process.run("msiexec", ["/i", msiPath, "/quiet", "/norestart"])
+          } ifnot {
+            rc = process.run(msiPath, ["/quiet", "/norestart"])
+          }
+          if rc != 0 {
+            rt_throwv("duster: msi installer exited with non-zero status {rc}")
+          }
+        } ifnot {
+          rt_throwv("duster: MSI installer not found for {name}")
+        }
+      } ifnot {
+        if installerType == "InstallShield" or installerType == "installshield" or installerType == "IS" {
+          setupPath = path.join(extractDir, "setup.exe")
+          if filesystem.isfile(setupPath) == No {
+            rt_throwv("duster: setup.exe not found in extracted archive for {name}")
+          }
+          rc = process.run(setupPath, ["/silent"])
+          if rc != 0 {
+            rt_throwv("duster: InstallShield installer exited with non-zero status {rc}")
+          }
+        } ifnot {
+          if installerType == "Exe" or installerType == "exe" {
+            exePath = EMP
+            files = filesystem.list(extractDir)
+            for f in files {
+              if rt_typename(f) == "tex" {
+                fnLower = lower(f)
+                n = count(fnLower)
+                if n >= 4 {
+                  ext = fnLower[n - 4 : n]
+                  if ext == ".exe" {
+                    exePath = path.join(extractDir, f)
+                  }
+                }
+              }
+            }
+            if exePath == EMP {
+              rt_throwv("duster: no executable (.exe) found in extracted archive for {name}")
+            }
+            rc = process.run(exePath, [])
+            if rc != 0 {
+              rt_throwv("duster: executable installer exited with non-zero status {rc}")
+            }
+          } ifnot {
+            rt_throwv("duster: unsupported installer_type '{installerType}'")
+          }
+        }
+      }
+    }
   }
 
   if keepArchive == No {
@@ -59,15 +331,210 @@ job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
     } grab (err) {
       dummy = 1
     }
-    do {
-      filesystem.remove(setupPath)
-    } grab (err) {
-      dummy = 1
-    }
   } ifnot {
     show("  retaining downloaded archive (-keep requested).")
   }
 
-  show("Duster: successfully installed {appName}!")
+  listPath = path.join(workDir, "list.txt")
+  duster_add_installed(listPath, name, version)
+
+  show("Duster: successfully installed {name}!")
+  give 0
+}
+
+job duster_upgrade_app(appName, regPath, releasesDir, workDir) {
+  show("Duster: checking upgrade for {appName}...")
+  listPath = path.join(workDir, "list.txt")
+  installedVersion = duster_find_installed(listPath, appName)
+  if installedVersion == EMP {
+    rt_throwv("duster: application '{appName}' is not installed")
+  }
+
+  reg = registry.duster_load_registry(regPath)
+  normName = lower(appName)
+  appInfo = reg[normName]
+  if appInfo == EMP {
+    rt_throwv("duster: unknown application '{appName}' in registry")
+  }
+
+  name = appInfo["name"]
+  registryVersion = appInfo["version"]
+  show("  installed version: {installedVersion}")
+  show("  registry version: {registryVersion}")
+
+  cmp = duster_compare_versions(registryVersion, installedVersion)
+  if cmp <= 0 {
+    show("Duster: {name} is already up to date (version {installedVersion}).")
+    give 0
+  }
+
+  show("  newer version available, upgrading...")
+  duster_install_app(name, No, regPath, releasesDir, workDir)
+  show("Duster: successfully upgraded {name} to {registryVersion}!")
+  give 0
+}
+
+job duster_find_uninstall_string(appName) {
+  outFile = path.absolute("duster_query_out.txt")
+  
+  lb = rt_char_from_code(123)
+  rb = rt_char_from_code(125)
+
+  p1 = "$paths = @('HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*');"
+  p2 = "$target = '" + appName + "';"
+  p3 = "foreach($p in $paths) " + lb
+  p4 = "  $items = Get-ItemProperty $p -ErrorAction SilentlyContinue;"
+  p5 = "  foreach($item in $items) " + lb
+  p6 = "    if($item.DisplayName) " + lb
+  p7 = "      $name = [string]$item.DisplayName;"
+  p8 = "      if($name -like \"*$target*\") " + lb
+  p9 = "        if($item.QuietUninstallString) " + lb + " [System.IO.File]::WriteAllText('" + outFile + "', [string]$item.QuietUninstallString); exit 0 " + rb + ";"
+  p10 = "        if($item.UninstallString) " + lb + " [System.IO.File]::WriteAllText('" + outFile + "', [string]$item.UninstallString); exit 0 " + rb + ";"
+  p11 = "      " + rb + ";"
+  p12 = "    " + rb + ";"
+  p13 = "  " + rb + ";"
+  p14 = rb + ";"
+  psCode = bind([p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14], " ")
+
+  result = EMP
+  rc = process.run("powershell.exe", ["-Command", psCode])
+  show("  [debug] powershell rc={rc}, target='{appName}'")
+  if filesystem.exists(outFile) {
+    result = cut(filesystem.read(outFile))
+    show("  [debug] found uninstall string: '{result}'")
+  } ifnot {
+    show("  [debug] outFile not found")
+  }
+
+  do {
+    filesystem.remove(outFile)
+  } grab (err) {}
+
+  give result
+}
+
+job duster_quote_char() {
+  give rt_char_from_code(34)
+}
+
+job duster_parse_command(cmdStr) {
+  trimmed = cut(cmdStr)
+  n = count(trimmed)
+  if n == 0 {
+    give {"exe": "", "args": []}
+  }
+
+  q = duster_quote_char()
+  exe = ""
+  rest = ""
+
+  if trimmed[0] == q {
+    i = 1
+    closed = No
+    while i < n and closed == No {
+      if trimmed[i] == q {
+        closed = Yes
+      } ifnot {
+        i = i + 1
+      }
+    }
+    if closed == Yes {
+      exe = trimmed[1 : i]
+      if i + 1 < n {
+        rest = cut(trimmed[i + 1 : n])
+      }
+    } ifnot {
+      exe = trimmed[1 : n]
+    }
+  } ifnot {
+    sp = seek(trimmed, " ")
+    if sp == EMP {
+      exe = trimmed
+      rest = ""
+    } ifnot {
+      exe = trimmed[0 : sp]
+      rest = cut(trimmed[sp + 1 : n])
+    }
+  }
+
+  args = []
+  if count(rest) > 0 {
+    inQuote = No
+    cur = []
+    rn = count(rest)
+    ri = 0
+    while ri < rn {
+      ch = rest[ri]
+      if ch == q {
+        inQuote = (inQuote == No)
+      } ifnot {
+        if ch == " " and inQuote == No {
+          if count(cur) > 0 {
+            attach(args, bind(cur, ""))
+            cur = []
+          }
+        } ifnot {
+          attach(cur, ch)
+        }
+      }
+      ri = ri + 1
+    }
+    if count(cur) > 0 {
+      attach(args, bind(cur, ""))
+    }
+  }
+
+  give {"exe": exe, "args": args}
+}
+
+job duster_run_uninstall_string(cmdStr) {
+  parsed = duster_parse_command(cmdStr)
+  exe = parsed["exe"]
+  args = parsed["args"]
+  show("  running uninstaller exe: '{exe}' with args: {args}")
+  rc = process.run(exe, args)
+  give rc
+}
+
+job duster_uninstall_app(appName, regPath, workDir) {
+  show("Duster: uninstalling {appName}...")
+  listPath = path.join(workDir, "list.txt")
+  installedVersion = duster_find_installed(listPath, appName)
+  if installedVersion == EMP {
+    rt_throwv("duster: application '{appName}' is not installed")
+  }
+
+  reg = registry.duster_load_registry(regPath)
+  normName = lower(appName)
+  appInfo = reg[normName]
+  name = appName
+  if appInfo != EMP {
+    if rt_typename(appInfo) == "board" {
+      if has(appInfo, "name") {
+        if appInfo["name"] != EMP {
+          name = appInfo["name"]
+        }
+      }
+    }
+  }
+
+  show("  searching Windows uninstall registry for {name}...")
+  uninstallStr = duster_find_uninstall_string(name)
+  if uninstallStr == EMP and name != appName {
+    uninstallStr = duster_find_uninstall_string(appName)
+  }
+
+  if uninstallStr == EMP {
+    rt_throwv("duster: no uninstall registry entry found for '{name}' (searched for '{appName}')")
+  }
+
+  show("  running uninstaller command: {uninstallStr}")
+  rc = duster_run_uninstall_string(uninstallStr)
+  if rc != 0 {
+    rt_throwv("duster: uninstaller exited with non-zero status {rc}")
+  }
+
+  duster_remove_installed(listPath, name)
+  show("Duster: successfully uninstalled {name}!")
   give 0
 }
