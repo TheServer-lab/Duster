@@ -21,4 +21,4 @@ package
   installer_type NSIS
   verification_hash bb22140560d1b36b65bd4341abde86929f9dc4623c1b1c5e339ddb29429387eb
   category coll [Fly Programing Language]
-  file_name "fly-installer-0.1.5"
+  file_name "fly-installer-0.1.5.zip"
