@@ -14,3 +14,11 @@ package
   verification_hash 1e32db754aa99a2eeb219442ac8c65d604544eee5152ed912de14bcac6283cdc
   category coll [Archives Zip 7z]
   file_name "7z26.03-x64.zip"
+package
+  name Fly
+  license NonCommearcial
+  version "0.1.5"
+  installer_type NSIS
+  verification_hash bb22140560d1b36b65bd4341abde86929f9dc4623c1b1c5e339ddb29429387eb
+  category coll [Fly Programing Language]
+  file_name "fly-installer-0.1.5"
