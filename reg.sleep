@@ -6,7 +6,7 @@ package
   version "25.01"
   installer_type Inno
   verification_hash 1e32db754aa99a2eeb219442ac8c65d604544eee5152ed912de14bcac6283cdc
-  category coll [Compression 7-Zip]
+  category coll [Compression 7-Zip 7zip]
   file_name "7z26.03-x64.zip"
 
 package
