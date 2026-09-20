@@ -22,22 +22,40 @@ job main() {
       show("error: missing application name")
       process.exit(1)
     }
-    rawAppArg = args[1]
+    interactiveMode = No
+    reqArg = EMP
+    for arg in args {
+      if arg == "-interact" or arg == "--interactive" or arg == "-interactive" {
+        interactiveMode = Yes
+      } ifnot {
+        if arg != cmd {
+          if reqArg == EMP {
+            reqArg = arg
+          }
+        }
+      }
+    }
+
+    if reqArg == EMP {
+      show("error: missing application name or requirements file")
+      process.exit(1)
+    }
+
     isReqFile = No
-    if filesystem.exists(rawAppArg) {
+    if filesystem.exists(reqArg) {
       isReqFile = Yes
     } ifnot {
-      if has(lower(rawAppArg), ".dusterinstall") {
+      if has(lower(reqArg), ".dusterinstall") {
         isReqFile = Yes
       }
     }
 
     do {
       if isReqFile == Yes {
-        resolved = installer.duster_resolve_paths(rawAppArg)
-        installer.duster_install_requirements(resolved["reqPath"], resolved["regPath"], resolved["releasesDir"], resolved["workDir"])
+        resolved = installer.duster_resolve_paths(reqArg)
+        installer.duster_install_requirements(resolved["reqPath"], resolved["regPath"], resolved["releasesDir"], resolved["workDir"], interactiveMode)
       } ifnot {
-        appName = rawAppArg
+        appName = reqArg
         keep = No
 
         if count(args) >= 3 {
@@ -46,10 +64,10 @@ job main() {
           }
         }
 
-        if count(rawAppArg) >= 5 {
-          suffix = rawAppArg[count(rawAppArg) - 5 : count(rawAppArg)]
+        if count(reqArg) >= 5 {
+          suffix = reqArg[count(reqArg) - 5 : count(reqArg)]
           if suffix == "-keep" {
-            appName = rawAppArg[0 : count(rawAppArg) - 5]
+            appName = reqArg[0 : count(reqArg) - 5]
             keep = Yes
           }
         }
@@ -58,7 +76,7 @@ job main() {
         installer.duster_install_app_ex(appName, keep, paths["regPath"], paths["releasesDir"], paths["workDir"], Yes)
       }
     } grab (err) {
-      show("error: {err}")
+      show("error: {tex(err)}")
       process.exit(1)
     }
   } ifnot {

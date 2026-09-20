@@ -702,7 +702,34 @@ job duster_confirm(promptMsg) {
   give giveYes
 }
 
-job duster_install_requirements(reqPath, regPath, releasesDir, workDir) {
+job duster_supports_silent(appInfo) {
+  if appInfo == EMP {
+    give No
+  }
+  if rt_typename(appInfo) != "board" {
+    give No
+  }
+  instType = appInfo["installer_type"]
+  silentField = appInfo["silent"]
+  if silentField != EMP {
+    if silentField == "no" or silentField == "No" or silentField == "false" {
+      give No
+    }
+    if silentField == "yes" or silentField == "Yes" or silentField == "true" {
+      give Yes
+    }
+  }
+  if instType == EMP {
+    give No
+  }
+  tLower = lower(instType)
+  if tLower == "inno" or tLower == "nsis" or tLower == "msi" or tLower == "installshield" or tLower == "is" {
+    give Yes
+  }
+  give No
+}
+
+job duster_install_requirements(reqPath, regPath, releasesDir, workDir, forceInteractive) {
   show("Duster: parsing requirements file {reqPath}...")
   req = duster_parse_requirements(reqPath)
 
@@ -728,37 +755,81 @@ job duster_install_requirements(reqPath, regPath, releasesDir, workDir) {
             attach(argParts, "{q}{arg}{q}")
           }
           argListStr = bind(argParts, ", ")
-          elevateCmd = "Start-Process duster -ArgumentList @({argListStr}) -Verb RunAs -Wait"
+          elevateCmd = "$p = Start-Process duster -ArgumentList @({argListStr}) -Verb RunAs -PassThru -Wait; exit $p.ExitCode"
           elevRc = process.run("powershell.exe", ["-Command", elevateCmd])
-          if elevRc != 0 {
-            rt_throwv("duster: elevation failed or cancelled by user (exit code {elevRc})")
-          }
-          process.exit(0)
+          process.exit(elevRc)
         }
       }
     }
   }
 
-  containsNonSilent = req["contains_non_silent"]
-  isSilent = Yes
-  if containsNonSilent == "yes" {
-    isSilent = No
-    promptMsg = "Warning: this dependency file contains non-silent installers.\nSome installers may require user interaction.\n\nContinue? [Y/n] "
-    confirmed = duster_confirm(promptMsg)
-    if confirmed == No {
-      rt_throwv("duster: installation cancelled by user")
+  reg = registry.duster_load_registry(regPath)
+  packages = req["packages"]
+
+  show("Duster: " + path.basename(reqPath))
+  show(tex(count(packages)) + " packages found:")
+  show("")
+
+  hasInteractive = No
+  pkgPlans = []
+  for pkg in packages {
+    normName = lower(pkg)
+    appInfo = reg[normName]
+    isSil = Yes
+    if forceInteractive == Yes {
+      isSil = No
+    } ifnot {
+      if appInfo == EMP {
+        isSil = No
+      } ifnot {
+        if duster_supports_silent(appInfo) == No {
+          isSil = No
+        }
+      }
     }
+
+    statusStr = "-> silent"
+    if isSil == No {
+      statusStr = "-> interactive"
+      hasInteractive = Yes
+    }
+    attach(pkgPlans, {"name": pkg, "silent": isSil, "status": statusStr})
+    show("  " + pkg + "   " + statusStr)
   }
 
-  packages = req["packages"]
+  show("")
+  if hasInteractive == Yes {
+    show("Some installers require user interaction.")
+  } ifnot {
+    show("No interactive installers detected.")
+  }
+  show("")
+
+  confirmed = duster_confirm("Continue? [Y/n] ")
+  if confirmed == No {
+    rt_throwv("duster: installation cancelled by user")
+  }
+
   show("Duster: bulk installing {count(packages)} packages...")
 
-  for pkg in packages {
+  for plan in pkgPlans {
+    pkg = plan["name"]
+    isSil = plan["silent"]
     show("--------------------------------------------------")
+    if isSil == No {
+      normName = lower(pkg)
+      appInfo = reg[normName]
+      if appInfo != EMP and duster_supports_silent(appInfo) == No {
+        show("Duster: installing {pkg}...")
+        show("  [warning] this package does not support silent installation")
+        show("  launching interactive installer...")
+      }
+    }
+
     do {
-      duster_install_app_ex(pkg, No, regPath, releasesDir, workDir, isSilent)
+      duster_install_app_ex(pkg, No, regPath, releasesDir, workDir, isSil)
     } grab (err) {
-      show("error: {pkg} installation failed ({err})")
+      show("error: " + pkg + " installation failed (" + err + ")")
       show("")
       show("Duster: bulk installation stopped.")
       rt_throwv("duster: bulk installation failed")

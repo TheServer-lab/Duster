@@ -53,7 +53,8 @@ job duster_parse_registry(regContent) {
           "category": category,
           "file_name": file_name,
           "file_hash": file_hash,
-          "sha256": sha256_field
+          "sha256": sha256_field,
+          "silent": pkg["silent"]
         })
       }
     }
