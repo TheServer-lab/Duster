@@ -23,29 +23,42 @@ job main() {
       process.exit(1)
     }
     rawAppArg = args[1]
-    appName = rawAppArg
-    keep = No
-
-    if count(args) >= 3 {
-      if args[2] == "-keep" {
-        keep = Yes
-      }
-    }
-
-    if count(rawAppArg) >= 5 {
-      suffix = rawAppArg[count(rawAppArg) - 5 : count(rawAppArg)]
-      if suffix == "-keep" {
-        appName = rawAppArg[0 : count(rawAppArg) - 5]
-        keep = Yes
-      }
-    }
-
     regPath = "reg.sleep"
     releasesDir = "RELEASES"
     workDir = "."
 
+    isReqFile = No
+    if filesystem.exists(rawAppArg) {
+      isReqFile = Yes
+    } ifnot {
+      if has(lower(rawAppArg), ".dusterinstall") {
+        isReqFile = Yes
+      }
+    }
+
     do {
-      installer.duster_install_app(appName, keep, regPath, releasesDir, workDir)
+      if isReqFile == Yes {
+        installer.duster_install_requirements(rawAppArg, regPath, releasesDir, workDir)
+      } ifnot {
+        appName = rawAppArg
+        keep = No
+
+        if count(args) >= 3 {
+          if args[2] == "-keep" {
+            keep = Yes
+          }
+        }
+
+        if count(rawAppArg) >= 5 {
+          suffix = rawAppArg[count(rawAppArg) - 5 : count(rawAppArg)]
+          if suffix == "-keep" {
+            appName = rawAppArg[0 : count(rawAppArg) - 5]
+            keep = Yes
+          }
+        }
+
+        installer.duster_install_app(appName, keep, regPath, releasesDir, workDir)
+      }
     } grab (err) {
       show("error: {err}")
       process.exit(1)
