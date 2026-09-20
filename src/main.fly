@@ -23,10 +23,6 @@ job main() {
       process.exit(1)
     }
     rawAppArg = args[1]
-    regPath = "reg.sleep"
-    releasesDir = "RELEASES"
-    workDir = "."
-
     isReqFile = No
     if filesystem.exists(rawAppArg) {
       isReqFile = Yes
@@ -38,7 +34,8 @@ job main() {
 
     do {
       if isReqFile == Yes {
-        installer.duster_install_requirements(rawAppArg, regPath, releasesDir, workDir)
+        resolved = installer.duster_resolve_paths(rawAppArg)
+        installer.duster_install_requirements(resolved["reqPath"], resolved["regPath"], resolved["releasesDir"], resolved["workDir"])
       } ifnot {
         appName = rawAppArg
         keep = No
@@ -57,7 +54,8 @@ job main() {
           }
         }
 
-        installer.duster_install_app(appName, keep, regPath, releasesDir, workDir)
+        paths = installer.duster_find_reg_and_releases()
+        installer.duster_install_app_ex(appName, keep, paths["regPath"], paths["releasesDir"], paths["workDir"], Yes)
       }
     } grab (err) {
       show("error: {err}")

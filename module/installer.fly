@@ -183,6 +183,10 @@ job duster_search_apps(query, regPath) {
 }
 
 job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
+  give duster_install_app_ex(appName, keepArchive, regPath, releasesDir, workDir, Yes)
+}
+
+job duster_install_app_ex(appName, keepArchive, regPath, releasesDir, workDir, isSilent) {
   dummy = 0
   show("Duster: installing {appName}...")
   reg = registry.duster_load_registry(regPath)
@@ -245,7 +249,11 @@ job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
     if filesystem.isfile(setupPath) == No {
       rt_throwv("duster: setup.exe not found in extracted archive for {name}")
     }
-    rc = process.run(setupPath, ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+    args = []
+    if isSilent == Yes {
+      args = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
+    }
+    rc = process.run(setupPath, args)
     if rc != 0 {
       rt_throwv("duster: setup.exe exited with non-zero status {rc}")
     }
@@ -258,7 +266,11 @@ job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
       if filesystem.isfile(setupPath) == No {
         rt_throwv("duster: setup.exe not found in extracted archive for {name}")
       }
-      rc = process.run(setupPath, ["/S"])
+      args = []
+      if isSilent == Yes {
+        args = ["/S"]
+      }
+      rc = process.run(setupPath, args)
       if rc != 0 {
         rt_throwv("duster: NSIS installer exited with non-zero status {rc}")
       }
@@ -275,9 +287,17 @@ job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
           ext = path.extension(msiPath)
           rc = 0
           if ext == ".msi" {
-            rc = process.run("msiexec", ["/i", msiPath, "/quiet", "/norestart"])
+            if isSilent == Yes {
+              rc = process.run("msiexec", ["/i", msiPath, "/quiet", "/norestart"])
+            } ifnot {
+              rc = process.run("msiexec", ["/i", msiPath])
+            }
           } ifnot {
-            rc = process.run(msiPath, ["/quiet", "/norestart"])
+            if isSilent == Yes {
+              rc = process.run(msiPath, ["/quiet", "/norestart"])
+            } ifnot {
+              rc = process.run(msiPath, [])
+            }
           }
           if rc != 0 {
             rt_throwv("duster: msi installer exited with non-zero status {rc}")
@@ -291,7 +311,11 @@ job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
           if filesystem.isfile(setupPath) == No {
             rt_throwv("duster: setup.exe not found in extracted archive for {name}")
           }
-          rc = process.run(setupPath, ["/silent"])
+          args = []
+          if isSilent == Yes {
+            args = ["/silent"]
+          }
+          rc = process.run(setupPath, args)
           if rc != 0 {
             rt_throwv("duster: InstallShield installer exited with non-zero status {rc}")
           }
@@ -652,6 +676,32 @@ job duster_parse_requirements(filePath) {
   }
 }
 
+job duster_confirm(promptMsg) {
+  going = Yes
+  giveYes = No
+  while going == Yes {
+    resp = take(promptMsg)
+    norm = cut(resp)
+    if count(norm) == 0 {
+      giveYes = Yes
+      going = No
+    } ifnot {
+      if norm == "y" or norm == "Y" or norm == "yes" or norm == "YES" or norm == "Yes" {
+        giveYes = Yes
+        going = No
+      } ifnot {
+        if norm == "n" or norm == "N" or norm == "no" or norm == "NO" or norm == "No" {
+          giveYes = No
+          going = No
+        } ifnot {
+          show("Please enter Y or N.")
+        }
+      }
+    }
+  }
+  give giveYes
+}
+
 job duster_install_requirements(reqPath, regPath, releasesDir, workDir) {
   show("Duster: parsing requirements file {reqPath}...")
   req = duster_parse_requirements(reqPath)
@@ -662,7 +712,8 @@ job duster_install_requirements(reqPath, regPath, releasesDir, workDir) {
     if system.os() == "windows" {
       lb = rt_char_from_code(123)
       rb = rt_char_from_code(125)
-      p1 = "if ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) "
+      q = duster_quote_char()
+      p1 = "if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) "
       p2 = lb + " exit 0 " + rb + " else "
       p3 = lb + " exit 1 " + rb
       checkCode = p1 + p2 + p3
@@ -670,18 +721,31 @@ job duster_install_requirements(reqPath, regPath, releasesDir, workDir) {
       if rc != 0 {
         skipElevate = environment.get("DUSTER_SKIP_ELEVATION")
         if skipElevate == EMP {
-          rt_throwv("duster: elevation required but not running as administrator (run as administrator or set DUSTER_SKIP_ELEVATION=1)")
+          show("  requesting administrator elevation (UAC)...")
+          args = process.args()
+          argParts = []
+          for arg in args {
+            attach(argParts, "{q}{arg}{q}")
+          }
+          argListStr = bind(argParts, ", ")
+          elevateCmd = "Start-Process duster -ArgumentList @({argListStr}) -Verb RunAs -Wait"
+          elevRc = process.run("powershell.exe", ["-Command", elevateCmd])
+          if elevRc != 0 {
+            rt_throwv("duster: elevation failed or cancelled by user (exit code {elevRc})")
+          }
+          process.exit(0)
         }
       }
     }
   }
 
   containsNonSilent = req["contains_non_silent"]
+  isSilent = Yes
   if containsNonSilent == "yes" {
+    isSilent = No
     promptMsg = "Warning: this dependency file contains non-silent installers.\nSome installers may require user interaction.\n\nContinue? [Y/n] "
-    resp = take(promptMsg)
-    normResp = lower(cut(resp))
-    if normResp == "n" or normResp == "no" {
+    confirmed = duster_confirm(promptMsg)
+    if confirmed == No {
       rt_throwv("duster: installation cancelled by user")
     }
   }
@@ -691,9 +755,128 @@ job duster_install_requirements(reqPath, regPath, releasesDir, workDir) {
 
   for pkg in packages {
     show("--------------------------------------------------")
-    duster_install_app(pkg, No, regPath, releasesDir, workDir)
+    do {
+      duster_install_app_ex(pkg, No, regPath, releasesDir, workDir, isSilent)
+    } grab (err) {
+      show("error: {pkg} installation failed ({err})")
+      show("")
+      show("Duster: bulk installation stopped.")
+      rt_throwv("duster: bulk installation failed")
+    }
   }
 
   show("Duster: successfully installed all requirements from {reqPath}!")
   give 0
+}
+
+job duster_is_absolute(p) {
+  n = count(p)
+  if n >= 2 {
+    if p[1] == ":" {
+      give Yes
+    }
+  }
+  if n >= 1 {
+    if p[0] == "/" or p[0] == "\\" {
+      give Yes
+    }
+  }
+  give No
+}
+
+job duster_resolve_paths(reqPath) {
+  absReqPath = reqPath
+  if duster_is_absolute(reqPath) == No {
+    absReqPath = path.absolute(reqPath)
+  }
+  reqDir = path.dirname(absReqPath)
+  
+  regPath = path.join(reqDir, "reg.sleep")
+  if filesystem.exists(regPath) == No {
+    cwdReg = "reg.sleep"
+    if filesystem.exists(cwdReg) {
+      regPath = cwdReg
+    } ifnot {
+      cur = reqDir
+      i = 0
+      found = No
+      while i < 6 and found == No {
+        candidate = path.join(cur, "reg.sleep")
+        if filesystem.exists(candidate) {
+          regPath = candidate
+          found = Yes
+        } ifnot {
+          parent = path.dirname(cur)
+          if parent == cur {
+            found = Yes
+          } ifnot {
+            cur = parent
+          }
+        }
+        i = i + 1
+      }
+    }
+  }
+
+  absReg = regPath
+  if duster_is_absolute(regPath) == No {
+    absReg = path.absolute(regPath)
+  }
+  regDir = path.dirname(absReg)
+  releasesDir = path.join(regDir, "RELEASES")
+  if filesystem.exists(releasesDir) == No {
+    do {
+      filesystem.mkdir(releasesDir)
+    } grab (err) {}
+  }
+
+  workDir = regDir
+  give {
+    "reqPath": absReqPath,
+    "regPath": absReg,
+    "releasesDir": releasesDir,
+    "workDir": workDir
+  }
+}
+
+job duster_find_reg_and_releases() {
+  regPath = "reg.sleep"
+  if filesystem.exists(regPath) == No {
+    cur = path.absolute(".")
+    i = 0
+    found = No
+    while i < 6 and found == No {
+      candidate = path.join(cur, "reg.sleep")
+      if filesystem.exists(candidate) {
+        regPath = candidate
+        found = Yes
+      } ifnot {
+        parent = path.dirname(cur)
+        if parent == cur {
+          found = Yes
+        } ifnot {
+          cur = parent
+        }
+      }
+      i = i + 1
+    }
+  }
+
+  absReg = regPath
+  if duster_is_absolute(regPath) == No {
+    absReg = path.absolute(regPath)
+  }
+  regDir = path.dirname(absReg)
+  releasesDir = path.join(regDir, "RELEASES")
+  if filesystem.exists(releasesDir) == No {
+    do {
+      filesystem.mkdir(releasesDir)
+    } grab (err) {}
+  }
+
+  give {
+    "regPath": absReg,
+    "releasesDir": releasesDir,
+    "workDir": regDir
+  }
 }

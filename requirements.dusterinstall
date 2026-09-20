@@ -1,0 +1,9 @@
+elevation-required: yes
+contains-non-silent-apps: yes
+
+install:
+greenshot
+7-zip
+Fly
+
+$this is a comment
