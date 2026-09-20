@@ -94,11 +94,11 @@ job main() {
           process.exit(1)
         }
         query = args[1]
-        regPath = "reg.sleep"
+        paths = installer.duster_find_reg_and_releases()
         do {
-          installer.duster_search_apps(query, regPath)
+          installer.duster_search_apps(query, paths["regPath"])
         } grab (err) {
-          show("error: {err}")
+          show("error: {tex(err)}")
           process.exit(1)
         }
       } ifnot {
@@ -108,13 +108,11 @@ job main() {
             process.exit(1)
           }
           appName = args[1]
-          regPath = "reg.sleep"
-          releasesDir = "RELEASES"
-          workDir = "."
+          paths = installer.duster_find_reg_and_releases()
           do {
-            installer.duster_upgrade_app(appName, regPath, releasesDir, workDir)
+            installer.duster_upgrade_app(appName, paths["regPath"], paths["releasesDir"], paths["workDir"])
           } grab (err) {
-            show("error: {err}")
+            show("error: {tex(err)}")
             process.exit(1)
           }
         } ifnot {
@@ -124,12 +122,11 @@ job main() {
               process.exit(1)
             }
             appName = args[1]
-            regPath = "reg.sleep"
-            workDir = "."
+            paths = installer.duster_find_reg_and_releases()
             do {
-              installer.duster_uninstall_app(appName, regPath, workDir)
+              installer.duster_uninstall_app(appName, paths["regPath"], paths["workDir"])
             } grab (err) {
-              show("error: {err}")
+              show("error: {tex(err)}")
               process.exit(1)
             }
           } ifnot {

@@ -128,7 +128,8 @@ job duster_compare_versions(v1, v2) {
 }
 
 job duster_list_apps() {
-  listPath = "list.txt"
+  paths = duster_find_reg_and_releases()
+  listPath = path.join(paths["workDir"], "list.txt")
   db = duster_read_installed_db(listPath)
   if count(db) == 0 {
     show("No installed applications.")
