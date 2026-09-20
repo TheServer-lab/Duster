@@ -324,6 +324,9 @@ job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
     }
   }
 
+  listPath = path.join(workDir, "list.txt")
+  duster_add_installed(listPath, name, version)
+
   if keepArchive == No {
     show("  cleaning up temporary files...")
     do {
@@ -331,12 +334,23 @@ job duster_install_app(appName, keepArchive, regPath, releasesDir, workDir) {
     } grab (err) {
       dummy = 1
     }
+    do {
+      files = filesystem.list(extractDir)
+      for f in files {
+        if rt_typename(f) == "tex" {
+          filePath = path.join(extractDir, f)
+          do {
+            filesystem.remove(filePath)
+          } grab (err) {}
+        }
+      }
+      filesystem.remove(extractDir)
+    } grab (err) {
+      dummy = 1
+    }
   } ifnot {
-    show("  retaining downloaded archive (-keep requested).")
+    show("  retaining downloaded archive and extracted directory (-keep requested).")
   }
-
-  listPath = path.join(workDir, "list.txt")
-  duster_add_installed(listPath, name, version)
 
   show("Duster: successfully installed {name}!")
   give 0
